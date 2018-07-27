@@ -74,7 +74,8 @@ add_filter('manage_slb_list_posts_custom_column', 'slb_list_column_data', 1, 2);
 // hint: register ajax actions
 add_action('wp_ajax_nopriv_slb_save_subscription', 'slb_save_subscription'); // regular website visitor
 add_action('wp_ajax_slb_save_subscription', 'slb_save_subscription'); // admin user
-
+add_action('wp_ajax_nopriv_slb_unsubscribe', 'slb_unsubscribe'); // regular website visitor
+add_action('wp_ajax_slb_unsubscribe', 'slb_unsubscribe'); // admin user
 // 1.5
 // load external files to public website
 add_action('wp_enqueue_scripts', 'slb_public_scripts');
@@ -105,6 +106,7 @@ add_action('admin_init', 'slb_register_options');
 // hint: registers all our custom shortcodes
 function slb_register_shortcodes() {
     add_shortcode('slb_form', 'slb_form_shortcode');
+	add_shortcode('slb_manage_subscriptions', 'slb_manage_subscriptions_shortcode');
 }
 
 // 2.2
@@ -124,7 +126,7 @@ function slb_form_shortcode( $args, $content="") {
 	
 		<div class="slb">
 		
-			<form id="slb_form" name="slb_form" class="slb-form" method="post"
+			<form id="slb_register_form" name="slb_form" class="slb-form" method="post"
 			action="/wp-admin/admin-ajax.php?action=slb_save_subscription" method="post">
 			
 				<input type="hidden" name="slb_list" value="'. $list_id .'">';
@@ -176,7 +178,52 @@ function slb_form_shortcode( $args, $content="") {
 
 }
 
+// 2.3
+// hint: displays a form for managing the users list subscriptions
+// example: [slb_manage_subscriptions]
+function slb_manage_subscriptions_shortcode( $args, $content="" ) {
 
+	// setup our return string
+	$output = '<div class="slb slb-manage-subscriptions">';
+
+	try {
+
+		// get the email address from the URL
+		$email = ( isset( $_GET['email'] ) ) ? esc_attr( $_GET['email'] ) : '';
+
+		// get the subscriber id from the email address
+		$subscriber_id = slb_get_subscriber_id( $email );
+
+		// get subscriber data
+		$subscriber_data = slb_get_subscriber_data( $subscriber_id );
+
+		// IF subscriber exists
+		if( $subscriber_id ):
+
+			// get subscriptions html
+			$output = slb_get_manage_subscriptions_html( $subscriber_id );
+
+		else:
+
+			// invalid link
+			$output .= '<p>This link is invalid.</p>';
+
+		endif;
+
+
+	} catch(Exception $e) {
+
+		// php error
+
+	}
+
+	// close our html div tag
+	$output .= '</div>';
+
+	// return our html
+	return $output;
+
+}
 
 
 /* !3. FILTERS */
@@ -512,6 +559,88 @@ function slb_add_subscription( $subscriber_id, $list_id ) {
 
 }
 
+
+// 5.4
+// hint: removes one or more subscriptions from a subscriber and notifies them via email
+// this function is a ajax form handler...
+// expects form post data: $_POST['subscriber_id'] and $_POST['list_id']
+function slb_unsubscribe() {
+
+	// setup default result data
+	$result = array(
+		'status' => 0,
+		'message' => 'Subscriptions were NOT updated. ',
+		'error' => '',
+		'errors' => array(),
+	);
+
+	$subscriber_id = ( isset($_POST['subscriber_id']) ) ? esc_attr( (int)$_POST['subscriber_id'] ) : 0;
+	$list_ids = ( isset($_POST['list_ids']) ) ? $_POST['list_ids'] : 0;
+
+	try {
+
+		// if there are lists to remove
+		if( is_array($list_ids) ):
+
+			// loop over lists to remove
+			foreach( $list_ids as &$list_id ):
+
+				// remove this subscription
+				slb_remove_subscription( $subscriber_id, $list_id );
+
+			endforeach;
+
+		endif;
+
+		// setup success status and message
+		$result['status']=1;
+		$result['message']='Subscriptions updated. ';
+
+		// get the updated list of subscriptions as html
+		$result['html']= slb_get_manage_subscriptions_html( $subscriber_id );
+
+	} catch( Exception $e ) {
+
+		// php error
+
+	}
+
+	// return result as json
+	slb_return_json( $result );
+
+}
+
+// 5.5
+// hint: removes a single subscription from a subscriber
+function slb_remove_subscription( $subscriber_id, $list_id ) {
+
+	// setup default return value
+	$subscription_saved = false;
+
+	// IF the subscriber has the current list subscription
+	if( slb_subscriber_has_subscription( $subscriber_id, $list_id ) ):
+
+		// get current subscriptions
+		$subscriptions = slb_get_subscriptions( $subscriber_id );
+
+		// get the position of the $list_id to remove
+		$needle = array_search( $list_id, $subscriptions );
+
+		// remove $list_id from $subscriptions array
+		unset( $subscriptions[$needle] );
+
+		// update slb_subscriptions
+		update_field(slb_get_acf_key( 'slb_subscriptions'), $subscriptions, $subscriber_id);
+
+		// subscriptions updated!
+		$subscription_saved = true;
+
+	endif;
+
+	// return result
+	return $subscription_saved;
+
+}
 
 /* !6. HELPERS */
 
@@ -889,6 +1018,85 @@ function slb_get_current_options() {
 
 }
 
+
+// 6.11
+// hint: generates an html form for managing subscriptions
+function slb_get_manage_subscriptions_html( $subscriber_id ) {
+
+	$output = '';
+
+	try {
+
+		// get array of list_ids for this subscriber
+		$lists = slb_get_subscriptions( $subscriber_id );
+
+		// get the subscriber data
+		$subscriber_data = slb_get_subscriber_data( $subscriber_id );
+
+		// set the title
+		$title = $subscriber_data['fname'] .'\'s Subscriptions';
+
+		// build out output html
+		$output = '
+			<form id="slb_manage_subscriptions_form" class="slb-form" method="post"  
+			action="/wp-admin/admin-ajax.php?action=slb_unsubscribe">
+				
+				<input type="hidden" name="subscriber_id" value="'. $subscriber_id .'">
+				
+				<h3 class="slb-title">'. $title .'</h3>';
+
+		if( !count($lists) ):
+
+			$output .='<p>There are no active subscriptions.</p>';
+
+		else:
+
+			$output .= '<table>
+						<tbody>';
+
+			// loop over lists
+			foreach( $lists as &$list_id ):
+
+				$list_object = get_post( $list_id );
+
+				$output .= '<tr>
+								<td>'.
+				           $list_object->post_title
+				           .'</td>
+								<td>
+									<label>
+										<input 
+											type="checkbox" name="list_ids[]" 
+											value="'. $list_object->ID .'" 
+										/> UNSUBSCRIBE
+									</label>
+								</td>
+							</tr>';
+
+			endforeach;
+
+			// close up our output html
+			$output .='</tbody>
+					</table>
+					
+					<p><input type="submit" value="Save Changes" /></p>';
+
+		endif;
+
+		$output .='
+				</form>
+			';
+
+	} catch( Exception $e ) {
+
+		// php error
+
+	}
+
+	// return output
+	return $output;
+
+}
 
 
 /* !7. CUSTOM POST TYPES */
